@@ -1,0 +1,126 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function isValidString(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+             request.resource.data[field].size() >= minLen &&
+             request.resource.data[field].size() <= maxLen;
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isOwner(userId);
+      allow update: if isAuthenticated() && isOwner(userId);
+      allow delete: if false; // Users can't delete themselves
+    }
+    
+    // Courses collection
+    match /courses/{courseId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() &&
+                       isValidString('name', 3, 200) &&
+                       request.resource.data.teacherId == request.auth.uid;
+      allow update: if isAuthenticated() &&
+                       resource.data.teacherId == request.auth.uid;
+      allow delete: if isAuthenticated() &&
+                       resource.data.teacherId == request.auth.uid;
+      
+      // Course participants subcollection
+      match /participants/{userId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated();
+        allow delete: if isAuthenticated() && 
+                        (isOwner(userId) || 
+                         get(/databases/$(database)/documents/courses/$(courseId)).data.teacherId == request.auth.uid);
+      }
+    }
+    
+    // Posts collection
+    match /posts/{postId} {
+      allow read: if isAuthenticated();
+      
+      allow create: if isAuthenticated() &&
+                       isValidString('content', 1, 5000) &&
+                       request.resource.data.userId == request.auth.uid &&
+                       request.resource.data.courseId is string &&
+                       request.resource.data.author is string &&
+                       request.resource.data.createdAt == request.time;
+      
+      allow update: if isAuthenticated() &&
+                       resource.data.userId == request.auth.uid &&
+                       // Only content can be updated
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['content']);
+      
+      allow delete: if isAuthenticated() &&
+                       resource.data.userId == request.auth.uid;
+      
+      // Comments subcollection
+      match /comments/{commentId} {
+        allow read: if isAuthenticated();
+        
+        allow create: if isAuthenticated() &&
+                         isValidString('content', 1, 2000) &&
+                         request.resource.data.authorId == request.auth.uid &&
+                         request.resource.data.createdAt == request.time;
+        
+        allow update: if isAuthenticated() &&
+                         resource.data.authorId == request.auth.uid &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['content']);
+        
+        allow delete: if isAuthenticated() &&
+                         resource.data.authorId == request.auth.uid;
+      }
+    }
+    
+    // Assignments collection
+    match /assignments/{assignmentId} {
+      allow read: if isAuthenticated();
+      
+      allow create: if isAuthenticated() &&
+                       isValidString('title', 1, 200) &&
+                       request.resource.data.authorId == request.auth.uid &&
+                       request.resource.data.courseId is string &&
+                       request.resource.data.createdAt == request.time;
+      
+      allow update: if isAuthenticated() &&
+                       resource.data.authorId == request.auth.uid;
+      
+      allow delete: if isAuthenticated() &&
+                       resource.data.authorId == request.auth.uid;
+      
+      // Assignment submissions subcollection
+      match /submissions/{userId} {
+        allow read: if isAuthenticated() &&
+                      (isOwner(userId) || 
+                       get(/databases/$(database)/documents/assignments/$(assignmentId)).data.authorId == request.auth.uid);
+        
+        allow create: if isAuthenticated() &&
+                         isOwner(userId) &&
+                         request.resource.data.submittedAt == request.time;
+        
+        allow update: if isAuthenticated() &&
+                         (isOwner(userId) || 
+                          get(/databases/$(database)/documents/assignments/$(assignmentId)).data.authorId == request.auth.uid);
+        
+        allow delete: if isAuthenticated() && isOwner(userId);
+      }
+    }
+    
+    // Deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,92 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function isValidFileSize(maxSizeMB) {
+      return request.resource.size < maxSizeMB * 1024 * 1024;
+    }
+    
+    function isValidImageType() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    
+    function isValidDocumentType() {
+      return request.resource.contentType in [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'text/plain',
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+        'image/webp'
+      ];
+    }
+    
+    // User profile images
+    match /users/{userId}/profile/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && 
+                      isOwner(userId) &&
+                      isValidImageType() &&
+                      isValidFileSize(5); // 5MB max
+    }
+    
+    // Course attachments
+    match /courses/{courseId}/attachments/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() &&
+                      isValidDocumentType() &&
+                      isValidFileSize(50); // 50MB max for course materials
+      allow delete: if isAuthenticated();
+    }
+    
+    // Post attachments
+    match /posts/{postId}/attachments/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() &&
+                      isValidDocumentType() &&
+                      isValidFileSize(25); // 25MB max
+      allow delete: if isAuthenticated();
+    }
+    
+    // Assignment attachments (teacher materials)
+    match /assignments/{assignmentId}/materials/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() &&
+                      isValidDocumentType() &&
+                      isValidFileSize(50); // 50MB max
+      allow delete: if isAuthenticated();
+    }
+    
+    // Student submissions
+    match /assignments/{assignmentId}/submissions/{userId}/{fileName} {
+      allow read: if isAuthenticated() &&
+                     (isOwner(userId) || true); // Teachers can read all submissions
+      allow write: if isAuthenticated() &&
+                      isOwner(userId) &&
+                      isValidDocumentType() &&
+                      isValidFileSize(25); // 25MB max for submissions
+      allow delete: if isAuthenticated() && isOwner(userId);
+    }
+    
+    // Deny all other access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
