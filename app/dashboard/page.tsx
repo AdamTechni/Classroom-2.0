@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import toast from 'react-hot-toast';
-import { isValidClassCodeFormat } from "@/lib/classCode";
+import { isValidClassCodeFormat, generateClassCode, formatClassCode } from "@/lib/classCode";
 import {
     Bell,
     Plus,
@@ -35,7 +35,8 @@ import {
     Timestamp,
     getDocs,
     doc,
-    setDoc
+    setDoc,
+    deleteDoc
 } from "firebase/firestore";
 
 // --- Types ---
@@ -70,6 +71,17 @@ type Assignment = {
     dueDate?: string;
     authorId: string;
 };
+
+type NotificationItem = {
+    id: string;
+    title: string;
+    description: string;
+    courseId: string;
+    createdAt: string;
+    type: 'info' | 'due' | 'comment';
+};
+
+type CourseMenuOrigin = 'sidebar' | 'banner';
 
 // --- Constants ---
 
@@ -113,6 +125,34 @@ const COURSES: Course[] = [
 ];
 
 const DEFAULT_TOPICS = ["Materiały podstawowe", "Projekt końcowy", "Zadania domowe", "Inne"];
+const COURSE_COLORS = ["bg-emerald-500", "bg-purple-500", "bg-sky-500", "bg-orange-500", "bg-indigo-500", "bg-pink-500"];
+
+const SAMPLE_NOTIFICATIONS: NotificationItem[] = [
+    {
+        id: "notif-1",
+        title: "Nowe ogłoszenie",
+        description: "Projekt zespołowy – sprawdź szczegóły w strumieniu.",
+        courseId: "prog-web",
+        createdAt: "Dzisiaj, 10:15",
+        type: "info",
+    },
+    {
+        id: "notif-2",
+        title: "Zbliża się termin",
+        description: "Oddaj zadanie 'API – dokumentacja' do wtorku 23:59.",
+        courseId: "web-adv",
+        createdAt: "Wczoraj, 18:40",
+        type: "due",
+    },
+    {
+        id: "notif-3",
+        title: "Komentarz do Twojego posta",
+        description: "Nauczyciel odpisał w wątku o projekcie.",
+        courseId: "prog-mob",
+        createdAt: "2 dni temu",
+        type: "comment",
+    },
+];
 
 // --- Helpers ---
 
@@ -149,7 +189,8 @@ export default function Home() {
     const router = useRouter();
 
     // UI State
-    const [selectedId, setSelectedId] = useState<string>(COURSES[0].id);
+    const [courses, setCourses] = useState<Course[]>(COURSES);
+    const [selectedId, setSelectedId] = useState<string>(COURSES[0]?.id || "");
     const [activeTab, setActiveTab] = useState<'stream' | 'classwork' | 'people'>('stream');
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -157,15 +198,19 @@ export default function Home() {
     const [isPublishOpen, setIsPublishOpen] = useState(false);
     const [isProfileOpen, setIsProfileOpen] = useState(false);
     const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+    const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
     const [isJoinClassOpen, setIsJoinClassOpen] = useState(false);
-    const [isCourseMenuOpen, setIsCourseMenuOpen] = useState(false);
+    const [isCreateClassOpen, setIsCreateClassOpen] = useState(false);
+    const [courseMenuOpen, setCourseMenuOpen] = useState<{ id: string; origin: CourseMenuOrigin } | null>(null);
     const [isCreateAssignmentOpen, setIsCreateAssignmentOpen] = useState(false);
     const [viewingAssignment, setViewingAssignment] = useState<Assignment | null>(null);
 
     // Refs
     const profileRef = useClickOutside(() => setIsProfileOpen(false));
     const notifRef = useClickOutside(() => setIsNotificationsOpen(false));
-    const courseMenuRef = useClickOutside(() => setIsCourseMenuOpen(false));
+    const plusMenuRef = useClickOutside(() => setIsPlusMenuOpen(false));
+    const sidebarMenuRef = useClickOutside(() => setCourseMenuOpen(null));
+    const bannerMenuRef = useClickOutside(() => setCourseMenuOpen(null));
 
     // Data State
     const [newPostContent, setNewPostContent] = useState("");
@@ -183,7 +228,32 @@ export default function Home() {
     // Join Class State
     const [joinClassCode, setJoinClassCode] = useState("");
 
-    const selected = COURSES.find((c) => c.id === selectedId)!;
+    const [notifications] = useState<NotificationItem[]>(SAMPLE_NOTIFICATIONS);
+    const unreadCount = notifications.length;
+
+    const pickColor = (idx: number) => COURSE_COLORS[idx % COURSE_COLORS.length];
+
+    // Create Class State
+    const [newCourse, setNewCourse] = useState({
+        name: "",
+        group: "",
+        location: "",
+        period: ""
+    });
+    const [newCourseCode, setNewCourseCode] = useState<string>(generateClassCode());
+
+    useEffect(() => {
+        if (courses.length === 0) {
+            setSelectedId("");
+            return;
+        }
+        if (!courses.find((c) => c.id === selectedId)) {
+            setSelectedId(courses[0].id);
+            setActiveTab('stream');
+        }
+    }, [courses, selectedId]);
+
+    const selected = courses.find((c) => c.id === selectedId);
 
     // Auth Redirect
     useEffect(() => {
@@ -194,7 +264,7 @@ export default function Home() {
 
     // Fetch Posts
     useEffect(() => {
-        if (!db) return;
+        if (!db || !selectedId) return;
         const q = query(
             collection(db, "posts"),
             where("courseId", "==", selectedId),
@@ -208,7 +278,7 @@ export default function Home() {
 
     // Fetch Assignments
     useEffect(() => {
-        if (!db) return;
+        if (!db || !selectedId) return;
         const q = query(
             collection(db, "assignments"),
             where("courseId", "==", selectedId),
@@ -222,7 +292,7 @@ export default function Home() {
 
     // Handlers
     const handlePublish = async () => {
-        if (newPostContent.trim().length === 0 || !user || !db) return;
+        if (newPostContent.trim().length === 0 || !user || !db || !selected) return;
         const loadingToast = toast.loading('Publikowanie...');
         try {
             await addDoc(collection(db, "posts"), {
@@ -243,7 +313,7 @@ export default function Home() {
     };
 
     const handleCreateAssignment = async () => {
-        if (newAssignment.title.trim().length === 0 || !user || !db) return;
+        if (newAssignment.title.trim().length === 0 || !user || !db || !selected) return;
         const loadingToast = toast.loading('Tworzenie zadania...');
         try {
             await addDoc(collection(db, "assignments"), {
@@ -267,6 +337,90 @@ export default function Home() {
     const handleLogout = async () => {
         await logout();
         router.push("/");
+    };
+
+    const handleLeaveCourse = async (courseId: string) => {
+        try {
+            if (db && user) {
+                const participantRef = doc(db, `courses/${courseId}/participants`, user.uid);
+                await deleteDoc(participantRef);
+            }
+        } catch (error) {
+            console.error('Error leaving course:', error);
+            toast.error('Nie udało się wypisać z kursu');
+        } finally {
+            setCourses((prev) => {
+                const next = prev.filter((c) => c.id !== courseId);
+                const nextSelected = selectedId === courseId ? next[0]?.id || "" : selectedId;
+                setSelectedId(nextSelected);
+                setActiveTab('stream');
+                return next;
+            });
+            toast.success('Wypisano z kursu');
+            setCourseMenuOpen(null);
+        }
+    };
+
+    const handleCreateClass = async () => {
+        const name = newCourse.name.trim();
+        if (!name) return;
+
+        const loadingToast = toast.loading('Tworzę zajęcia...');
+
+        // Prepare local course object (works offline too)
+        const localCourse: Course = {
+            id: `local-${Date.now()}`,
+            name,
+            shortName: name.slice(0, 10) || 'Kurs',
+            group: newCourse.group.trim() || '—',
+            location: newCourse.location.trim() || '—',
+            period: newCourse.period.trim() || '—',
+            color: pickColor(courses.length),
+        };
+
+        let createdId = localCourse.id;
+
+        // Try remote write if Firebase is available
+        try {
+            if (db && user) {
+                const courseData = {
+                    name: localCourse.name,
+                    shortName: localCourse.shortName,
+                    group: localCourse.group,
+                    location: localCourse.location,
+                    period: localCourse.period,
+                    color: localCourse.color,
+                    code: newCourseCode,
+                    ownerId: user.uid,
+                    createdAt: serverTimestamp()
+                };
+
+                const courseRef = await addDoc(collection(db, 'courses'), courseData);
+                createdId = courseRef.id;
+
+                const participantRef = doc(db, `courses/${courseRef.id}/participants`, user.uid);
+                await setDoc(participantRef, {
+                    role: 'teacher',
+                    joinedAt: serverTimestamp(),
+                    displayName: user.displayName,
+                    email: user.email,
+                    photoURL: user.photoURL
+                });
+            }
+        } catch (error) {
+            console.warn('Remote create failed, adding locally only:', error);
+        }
+
+        setCourses((prev) => [
+            ...prev,
+            { ...localCourse, id: createdId }
+        ]);
+        setSelectedId(createdId);
+        setActiveTab('stream');
+
+        toast.success('Zajęcia utworzone!', { id: loadingToast });
+        setIsCreateClassOpen(false);
+        setNewCourse({ name: "", group: "", location: "", period: "" });
     };
 
     const handleJoinClass = async () => {
@@ -294,6 +448,7 @@ export default function Home() {
 
             const courseDoc = snapshot.docs[0];
             const courseId = courseDoc.id;
+            const data = courseDoc.data() as Partial<Course>;
 
             // Add user to course participants
             const participantRef = doc(db, `courses/${courseId}/participants`, user.uid);
@@ -309,8 +464,22 @@ export default function Home() {
             setJoinClassCode("");
             setIsJoinClassOpen(false);
 
-            // Refresh the page to show new course
-            router.refresh();
+            setCourses((prev) => {
+                const exists = prev.find((c) => c.id === courseId);
+                if (exists) return prev;
+                const nextCourse: Course = {
+                    id: courseId,
+                    name: data.name || 'Nowe zajęcia',
+                    shortName: data.shortName || (data.name ? data.name.slice(0, 10) : 'Kurs'),
+                    period: data.period || '—',
+                    group: data.group || '—',
+                    location: data.location || '—',
+                    color: data.color || pickColor(prev.length)
+                };
+                return [...prev, nextCourse];
+            });
+            setSelectedId(courseId);
+            setActiveTab('stream');
         } catch (error) {
             console.error("Error joining class:", error);
             toast.error('Błąd podczas dołączania do zajęć', { id: loadingToast });
@@ -333,6 +502,11 @@ export default function Home() {
 
     if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50">Loading...</div>;
     if (!user) return null;
+    if (!selected) return (
+        <div className="min-h-screen flex items-center justify-center bg-gray-50 text-gray-600">
+            Brak kursów do wyświetlenia.
+        </div>
+    );
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-gray-900">
@@ -348,17 +522,69 @@ export default function Home() {
                     </div>
                 </div>
                 <div className="flex actions gap-2 sm:gap-4 items-center">
-                    <button onClick={() => setIsJoinClassOpen(true)} className="p-2 hover:bg-gray-100 rounded-full text-gray-500">
-                        <Plus size={24} />
-                    </button>
+                    <div className="relative" ref={plusMenuRef}>
+                        <button onClick={() => setIsPlusMenuOpen(!isPlusMenuOpen)} className="p-2 hover:bg-gray-100 rounded-full text-gray-500">
+                            <Plus size={24} />
+                        </button>
+                        {isPlusMenuOpen && (
+                            <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-xl shadow-xl border border-gray-100 py-2 z-50 animate-in fade-in zoom-in-95 duration-100">
+                                <button
+                                    className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-3"
+                                    onClick={() => {
+                                        setNewCourseCode(generateClassCode());
+                                        setIsCreateClassOpen(true);
+                                        setIsPlusMenuOpen(false);
+                                    }}
+                                >
+                                    <Plus size={18} className="text-indigo-600" />
+                                    <span>Utwórz zajęcia</span>
+                                </button>
+                                <button
+                                    className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-3"
+                                    onClick={() => {
+                                        setIsJoinClassOpen(true);
+                                        setIsPlusMenuOpen(false);
+                                    }}
+                                >
+                                    <LogOut size={18} className="text-indigo-600 rotate-180" />
+                                    <span>Dołącz do zajęć</span>
+                                </button>
+                            </div>
+                        )}
+                    </div>
                     <div className="relative" ref={notifRef}>
-                        <button onClick={() => setIsNotificationsOpen(!isNotificationsOpen)} className={`p-2 rounded-full relative ${isNotificationsOpen ? 'bg-indigo-50 text-indigo-600' : 'hover:bg-gray-100 text-gray-500'}`}>
+                        <button
+                            onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
+                            className={`p-2 rounded-full relative ${isNotificationsOpen ? 'bg-indigo-50 text-indigo-600' : 'hover:bg-gray-100 text-gray-500'}`}
+                        >
                             <Bell size={22} />
+                            {unreadCount > 0 && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500" />}
                         </button>
                         {isNotificationsOpen && (
-                            <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-50 animate-in fade-in zoom-in-95 duration-100">
-                                <div className="px-4 py-2 border-b border-gray-50"><h3 className="font-semibold text-gray-700">Powiadomienia</h3></div>
-                                <div className="p-8 text-center text-gray-500 text-sm">Brak nowych powiadomień</div>
+                            <div className="absolute right-0 top-full mt-2 w-96 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-50 animate-in fade-in zoom-in-95 duration-100">
+                                <div className="px-4 py-2 border-b border-gray-50 flex items-center justify-between">
+                                    <h3 className="font-semibold text-gray-700">Powiadomienia</h3>
+                                    <span className="text-xs text-gray-400">{unreadCount} nowe</span>
+                                </div>
+                                <div className="max-h-96 overflow-y-auto divide-y divide-gray-50">
+                                    {notifications.map((n) => (
+                                        <div key={n.id} className="px-4 py-3 hover:bg-gray-50 transition-colors">
+                                            <div className="flex items-start gap-3">
+                                                <div className={`w-9 h-9 rounded-full flex items-center justify-center ${n.type === 'due' ? 'bg-orange-50 text-orange-500' : n.type === 'comment' ? 'bg-blue-50 text-blue-500' : 'bg-emerald-50 text-emerald-600'}`}>
+                                                    {n.type === 'due' ? <Calendar size={18} /> : n.type === 'comment' ? <MessageSquare size={18} /> : <CheckCircle2 size={18} />}
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-2 text-sm font-semibold text-gray-800">
+                                                        <span className="truncate">{n.title}</span>
+                                                        <span className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full text-2xs font-medium">{n.courseId}</span>
+                                                    </div>
+                                                    <p className="text-sm text-gray-600 mt-0.5 line-clamp-2">{n.description}</p>
+                                                    <p className="text-xs text-gray-400 mt-1">{n.createdAt}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                         )}
                     </div>
@@ -392,26 +618,70 @@ export default function Home() {
             <div className="flex flex-1 overflow-hidden">
                 {/* Sidebar */}
                 <aside className={`fixed inset-y-0 left-0 z-20 w-72 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-in-out pt-16 lg:relative lg:translate-x-0 lg:pt-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-                    <div className="p-4 overflow-y-auto h-full">
+                    <div className="p-4 overflow-y-auto h-full" ref={sidebarMenuRef}>
                         <div className="mb-6">
                             <h3 className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Moje zajęcia</h3>
                             <div className="space-y-1">
-                                {COURSES.map((course) => (
-                                    <button
-                                        key={course.id}
-                                        onClick={() => {
-                                            setSelectedId(course.id);
-                                            setActiveTab('stream');
-                                            if (window.innerWidth < 1024) setIsSidebarOpen(false);
-                                        }}
-                                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all ${course.id === selectedId ? 'bg-indigo-50 text-indigo-700 font-medium shadow-sm ring-1 ring-indigo-200' : 'text-gray-600 hover:bg-gray-50'}`}
-                                    >
-                                        <div className={`w-2 h-8 rounded-full ${course.color} shadow-sm`}></div>
-                                        <div className="flex-1 min-w-0">
-                                            <div className="truncate">{course.name}</div>
-                                            <div className="text-xs text-gray-400 truncate opacity-80">{course.group}</div>
-                                        </div>
-                                    </button>
+                                {courses.map((course) => (
+                                    <div key={course.id} className="relative group">
+                                        <button
+                                            onClick={() => {
+                                                setSelectedId(course.id);
+                                                setActiveTab('stream');
+                                                setCourseMenuOpen(null);
+                                                if (window.innerWidth < 1024) setIsSidebarOpen(false);
+                                            }}
+                                            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all pr-12 ${course.id === selectedId ? 'bg-indigo-50 text-indigo-700 font-medium shadow-sm ring-1 ring-indigo-200' : 'text-gray-600 hover:bg-gray-50'}`}
+                                        >
+                                            <div className={`w-2 h-8 rounded-full ${course.color} shadow-sm`}></div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="truncate">{course.name}</div>
+                                                <div className="text-xs text-gray-400 truncate opacity-80">{course.group}</div>
+                                            </div>
+                                        </button>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setCourseMenuOpen((prev) => prev?.id === course.id && prev?.origin === 'sidebar'
+                                                    ? null
+                                                    : { id: course.id, origin: 'sidebar' });
+                                            }}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full opacity-0 group-hover:opacity-100 transition-all"
+                                            aria-label="Menu kursu"
+                                        >
+                                            <MoreVertical size={16} />
+                                        </button>
+                                        {courseMenuOpen?.id === course.id && courseMenuOpen?.origin === 'sidebar' && (
+                                            <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-xl shadow-xl border border-gray-100 py-2 z-30 animate-in fade-in zoom-in-95 duration-100">
+                                                <button
+                                                    className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2"
+                                                    onClick={() => {
+                                                        setSelectedId(course.id);
+                                                        setActiveTab('stream');
+                                                        setCourseMenuOpen(null);
+                                                    }}
+                                                >
+                                                    <MessageSquare size={16} /> Strumień
+                                                </button>
+                                                <button
+                                                    className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2"
+                                                    onClick={() => {
+                                                        setSelectedId(course.id);
+                                                        setActiveTab('classwork');
+                                                        setCourseMenuOpen(null);
+                                                    }}
+                                                >
+                                                    <BookOpen size={16} /> Zadania
+                                                </button>
+                                                <button
+                                                    className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                                    onClick={() => handleLeaveCourse(course.id)}
+                                                >
+                                                    <LogOut size={16} /> Wypisz się
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
                                 ))}
                             </div>
                         </div>
@@ -428,14 +698,32 @@ export default function Home() {
                                 <h1 className="text-2xl lg:text-4xl font-bold mb-2">{selected.name}</h1>
                                 <p className="text-white/90 text-sm lg:text-lg flex items-center gap-2">{selected.group}<span className="w-1.5 h-1.5 rounded-full bg-white/60"></span>{selected.location}</p>
                             </div>
-                            <div className="absolute bottom-4 right-4" ref={courseMenuRef}>
-                                <button onClick={() => setIsCourseMenuOpen(!isCourseMenuOpen)} className="p-2 bg-white/20 hover:bg-white/30 rounded-lg backdrop-blur-sm text-white">
+                            <div className="absolute bottom-4 right-4" ref={bannerMenuRef}>
+                                <button
+                                    onClick={() => setCourseMenuOpen((prev) => prev?.id === selected.id && prev?.origin === 'banner'
+                                        ? null
+                                        : { id: selected.id, origin: 'banner' })}
+                                    className="p-2 bg-white/20 hover:bg-white/30 rounded-lg backdrop-blur-sm text-white"
+                                >
                                     <MoreVertical size={20} />
                                 </button>
-                                {isCourseMenuOpen && (
+                                {courseMenuOpen?.id === selected.id && courseMenuOpen?.origin === 'banner' && (
                                     <div className="absolute right-0 bottom-full mb-2 w-48 bg-white rounded-xl shadow-xl border border-gray-100 py-1 z-20 text-gray-800 animate-in fade-in zoom-in-95 duration-100">
-                                        <button className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2"><Settings size={16} /> Ustawienia kursu</button>
-                                        <button className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"><LogOut size={16} /> Wypisz się</button>
+                                        <button
+                                            className="w-full text-left px-4 py-2 text-sm hover:bg-gray-50 flex items-center gap-2"
+                                            onClick={() => {
+                                                setActiveTab('stream');
+                                                setCourseMenuOpen(null);
+                                            }}
+                                        >
+                                            <Settings size={16} /> Szczegóły kursu
+                                        </button>
+                                        <button
+                                            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                            onClick={() => handleLeaveCourse(selected.id)}
+                                        >
+                                            <LogOut size={16} /> Wypisz się
+                                        </button>
                                     </div>
                                 )}
                             </div>
@@ -593,7 +881,7 @@ export default function Home() {
                         </div>
                         <div className="flex gap-4 p-4 bg-gray-50 rounded-2xl mb-4">
                             <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold flex-shrink-0">{user?.displayName?.[0] || "U"}</div>
-                            <textarea placeholder={`Ogłoś coś klasie ${selected.name}...`} className="w-full bg-transparent border-none p-0 text-gray-800 placeholder:text-gray-400 focus:ring-0 resize-none min-h-[120px]" value={newPostContent} onChange={(e) => setNewPostContent(e.target.value)} autoFocus />
+                            <textarea placeholder={`Ogłoś coś klasie ${selected?.name || ''}...`} className="w-full bg-transparent border-none p-0 text-gray-800 placeholder:text-gray-400 focus:ring-0 resize-none min-h-[120px]" value={newPostContent} onChange={(e) => setNewPostContent(e.target.value)} autoFocus />
                         </div>
                         <div className="flex justify-end gap-3">
                             <button onClick={() => setIsPublishOpen(false)} className="px-6 py-2.5 rounded-xl font-medium text-gray-600 hover:bg-gray-200">Anuluj</button>
@@ -698,6 +986,77 @@ export default function Home() {
                         </div>
                         <div className="p-6 bg-gray-50 border-t border-gray-100 flex justify-end">
                             <button onClick={() => setViewingAssignment(null)} className="px-6 py-2.5 bg-white border border-gray-200 rounded-xl font-medium text-gray-700 hover:bg-gray-100">Zamknij</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Create Class Modal */}
+            {isCreateClassOpen && (
+                <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl p-6">
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-xl font-bold text-gray-800">Utwórz zajęcia</h2>
+                            <button onClick={() => setIsCreateClassOpen(false)} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} className="text-gray-500" /></button>
+                        </div>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Nazwa zajęć</label>
+                                <input
+                                    type="text"
+                                    value={newCourse.name}
+                                    onChange={(e) => setNewCourse({ ...newCourse, name: e.target.value })}
+                                    className="w-full px-4 py-2 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                                    placeholder="np. Programowanie aplikacji webowych"
+                                    autoFocus
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Grupa</label>
+                                    <input
+                                        type="text"
+                                        value={newCourse.group}
+                                        onChange={(e) => setNewCourse({ ...newCourse, group: e.target.value })}
+                                        className="w-full px-4 py-2 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                                        placeholder="np. Klasa 3A"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Sala / miejsce</label>
+                                    <input
+                                        type="text"
+                                        value={newCourse.location}
+                                        onChange={(e) => setNewCourse({ ...newCourse, location: e.target.value })}
+                                        className="w-full px-4 py-2 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                                        placeholder="np. Sala 204"
+                                    />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Okres</label>
+                                <input
+                                    type="text"
+                                    value={newCourse.period}
+                                    onChange={(e) => setNewCourse({ ...newCourse, period: e.target.value })}
+                                    className="w-full px-4 py-2 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 outline-none"
+                                    placeholder="np. 2025/2026"
+                                />
+                            </div>
+                            <div className="mt-2 p-3 rounded-xl bg-gray-50 border border-gray-200 text-sm text-gray-700">
+                                Kod zajęć: <span className="font-mono font-semibold">{formatClassCode(newCourseCode)}</span>
+                                <p className="text-xs text-gray-500 mt-1">Uczniowie dołączą wpisując ten kod.</p>
+                            </div>
+                        </div>
+                        <div className="px-6 py-4 mt-4 -mx-6 -mb-6 bg-gray-50 border-t border-gray-100 flex justify-end gap-3 rounded-b-3xl">
+                            <button onClick={() => setIsCreateClassOpen(false)} className="px-6 py-2.5 rounded-xl font-medium text-gray-600 hover:bg-gray-200">Anuluj</button>
+                            <button
+                                onClick={handleCreateClass}
+                                disabled={!newCourse.name.trim()}
+                                className={`px-6 py-2.5 rounded-xl font-medium text-white transition-all ${newCourse.name.trim() ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-gray-300 cursor-not-allowed'}`}
+                            >
+                                Utwórz
+                            </button>
                         </div>
                     </div>
                 </div>
