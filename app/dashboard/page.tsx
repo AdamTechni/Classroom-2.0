@@ -20,7 +20,8 @@ import {
     BookOpen,
     Calendar,
     FileText,
-    CheckCircle2
+    CheckCircle2,
+    Trash2
 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { db } from "@/lib/firebase";
@@ -204,6 +205,7 @@ export default function Home() {
     const [courseMenuOpen, setCourseMenuOpen] = useState<{ id: string; origin: CourseMenuOrigin } | null>(null);
     const [isCreateAssignmentOpen, setIsCreateAssignmentOpen] = useState(false);
     const [viewingAssignment, setViewingAssignment] = useState<Assignment | null>(null);
+    const [postMenuOpen, setPostMenuOpen] = useState<string | null>(null);
 
     // Refs
     const profileRef = useClickOutside(() => setIsProfileOpen(false));
@@ -264,28 +266,57 @@ export default function Home() {
 
     // Fetch Posts
     useEffect(() => {
-        if (!db || !selectedId) return;
+        if (!db || !selectedId) {
+            setPosts([]);
+            return;
+        }
+        
+        // Clear posts when switching courses
+        setPosts([]);
+        
         const q = query(
             collection(db, "posts"),
-            where("courseId", "==", selectedId),
-            orderBy("createdAt", "desc")
+            where("courseId", "==", selectedId)
         );
         const unsubscribe = onSnapshot(q, (snapshot) => {
-            setPosts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post)));
+            const fetchedPosts = snapshot.docs.map(doc => {
+                const data = doc.data();
+                return { id: doc.id, ...data } as Post;
+            });
+            // Sort by createdAt in JavaScript
+            fetchedPosts.sort((a, b) => {
+                if (!a.createdAt) return 1;
+                if (!b.createdAt) return -1;
+                return b.createdAt.seconds - a.createdAt.seconds;
+            });
+            setPosts(fetchedPosts);
         });
         return () => unsubscribe();
     }, [selectedId]);
 
     // Fetch Assignments
     useEffect(() => {
-        if (!db || !selectedId) return;
+        if (!db || !selectedId) {
+            setAssignments([]);
+            return;
+        }
+        
+        // Clear assignments when switching courses
+        setAssignments([]);
+        
         const q = query(
             collection(db, "assignments"),
-            where("courseId", "==", selectedId),
-            orderBy("createdAt", "desc")
+            where("courseId", "==", selectedId)
         );
         const unsubscribe = onSnapshot(q, (snapshot) => {
-            setAssignments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Assignment)));
+            const fetchedAssignments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Assignment));
+            // Sort by createdAt in JavaScript
+            fetchedAssignments.sort((a, b) => {
+                if (!a.createdAt) return 1;
+                if (!b.createdAt) return -1;
+                return b.createdAt.seconds - a.createdAt.seconds;
+            });
+            setAssignments(fetchedAssignments);
         });
         return () => unsubscribe();
     }, [selectedId]);
@@ -483,6 +514,19 @@ export default function Home() {
         } catch (error) {
             console.error("Error joining class:", error);
             toast.error('Błąd podczas dołączania do zajęć', { id: loadingToast });
+        }
+    };
+
+    const handleDeletePost = async (postId: string) => {
+        if (!db || !user) return;
+        const loadingToast = toast.loading('Usuwanie ogłoszenia...');
+        try {
+            await deleteDoc(doc(db, "posts", postId));
+            toast.success('Ogłoszenie usunięte!', { id: loadingToast });
+            setPostMenuOpen(null);
+        } catch (error) {
+            console.error('Error deleting post:', error);
+            toast.error('Błąd podczas usuwania ogłoszenia', { id: loadingToast });
         }
     };
 
@@ -753,18 +797,30 @@ export default function Home() {
                                     </div>
                                 </div>
                                 <div className="lg:col-span-3 space-y-6">
+                                    {/* Info Banner */}
+                                    <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-100 rounded-2xl p-4 flex items-center gap-3">
+                                        <div className={`w-3 h-3 rounded-full ${selected.color}`}></div>
+                                        <div className="flex-1">
+                                            <p className="text-sm font-medium text-gray-800">
+                                                Oglądasz strumień zajęć: <span className="font-bold text-indigo-700">{selected.name}</span>
+                                            </p>
+                                            <p className="text-xs text-gray-500 mt-0.5">Wszystkie ogłoszenia są widoczne tylko dla uczestników tych zajęć</p>
+                                        </div>
+                                    </div>
+                                    
                                     <div onClick={() => setIsPublishOpen(true)} className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm cursor-pointer hover:shadow-md transition-shadow group flex items-center gap-4">
                                         <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold group-hover:scale-105 transition-transform overflow-hidden">
                                             {user?.photoURL ? <img src={user.photoURL} alt="User" className="w-full h-full object-cover" /> : "J"}
                                         </div>
-                                        <div className="text-gray-500 text-sm group-hover:text-gray-700">Ogłoś coś klasie...</div>
+                                        <div className="text-gray-500 text-sm group-hover:text-gray-700">Ogłoś coś klasie {selected.shortName}...</div>
                                     </div>
 
                                     {posts.length === 0 ? (
                                         <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center shadow-sm">
                                             <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-4 text-indigo-400"><MessageSquare size={32} /></div>
-                                            <h3 className="text-xl font-bold text-gray-800 mb-2">Tu zaczyna się dyskusja</h3>
-                                            <p className="text-gray-500 max-w-md mx-auto">Gdy opublikujesz ogłoszenie lub zadanie, pojawi się ono tutaj.</p>
+                                            <h3 className="text-xl font-bold text-gray-800 mb-2">Brak ogłoszeń w strumieniu</h3>
+                                            <p className="text-gray-500 max-w-md mx-auto mb-2">Gdy opublikujesz ogłoszenie dla zajęć <span className="font-semibold text-gray-700">{selected.name}</span>, pojawi się ono tutaj.</p>
+                                            <p className="text-xs text-gray-400">Przełącz się na inne zajęcia w menu po lewej, aby zobaczyć ich ogłoszenia.</p>
                                         </div>
                                     ) : (
                                         <div className="space-y-4">
@@ -775,7 +831,26 @@ export default function Home() {
                                                             {post.authorPhotoURL ? <img src={post.authorPhotoURL} alt={post.author} className="w-full h-full object-cover" /> : post.author[0]}
                                                         </div>
                                                         <div><div className="font-semibold text-gray-900">{post.author}</div><div className="text-xs text-gray-500">{formatDate(post.createdAt)}</div></div>
-                                                        <button className="ml-auto text-gray-400 hover:text-gray-600 p-1"><MoreVertical size={18} /></button>
+                                                        {post.userId === user.uid && (
+                                                            <div className="ml-auto relative">
+                                                                <button 
+                                                                    onClick={() => setPostMenuOpen(postMenuOpen === post.id ? null : post.id)}
+                                                                    className="text-gray-400 hover:text-gray-600 p-1"
+                                                                >
+                                                                    <MoreVertical size={18} />
+                                                                </button>
+                                                                {postMenuOpen === post.id && (
+                                                                    <div className="absolute right-0 top-full mt-1 w-48 bg-white rounded-xl shadow-xl border border-gray-100 py-1 z-20 animate-in fade-in zoom-in-95 duration-100">
+                                                                        <button
+                                                                            onClick={() => handleDeletePost(post.id)}
+                                                                            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                                                        >
+                                                                            <Trash2 size={16} /> Usuń ogłoszenie
+                                                                        </button>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                     <div className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{post.content}</div>
                                                     <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-4">
